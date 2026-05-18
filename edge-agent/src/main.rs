@@ -11,6 +11,7 @@ use axum::{
 };
 use reqwest;
 use serde::Deserialize;
+use serde_json;
 use tokio::sync::RwLock;
 use tracing::{error, info};
 
@@ -20,7 +21,7 @@ struct TagsResponse {
     readings: Vec<TagReading>,
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Clone, serde::Serialize)]
 struct TagReading {
     tag_id: String,
     value: f64,
@@ -39,10 +40,13 @@ async fn main() -> anyhow::Result<()> {
 
     let simulator_url = env::var("SIMULATOR_URL")
         .unwrap_or_else(|_| "http://localhost:8001".to_string());
+    let signal_api_url = env::var("SIGNAL_API_URL")
+        .unwrap_or_else(|_| "http://localhost:8003".to_string());
 
     info!(
         event = "edge_agent_startup",
         simulator_url = %simulator_url,
+        signal_api_url = %signal_api_url,
         version = env!("CARGO_PKG_VERSION"),
         "AURA Edge Agent starting"
     );
@@ -52,22 +56,37 @@ async fn main() -> anyhow::Result<()> {
 
     let poll_handle = tokio::spawn(async move {
         let client = reqwest::Client::new();
-        let url = format!("{}/tags", simulator_url);
+        let poll_url = format!("{}/tags", simulator_url);
+        let ingest_url = format!("{}/ingest", signal_api_url);
 
         loop {
-            match client.get(&url).send().await {
+            match client.get(&poll_url).send().await {
                 Ok(resp) => match resp.json::<TagsResponse>().await {
                     Ok(data) => {
+                        // Store in ring buffer
                         let mut map = store_clone.write().await;
-                        for reading in data.readings {
+                        for reading in &data.readings {
                             let entry = map.entry(reading.tag_id.clone()).or_default();
-                            entry.push(reading);
+                            entry.push(reading.clone());
                             if entry.len() > 1000 {
                                 entry.remove(0);
                             }
                         }
                         let total: usize = map.values().map(|v| v.len()).sum();
-                        info!(event = "poll_success", tags_ingested = total, asset = %data.asset);
+
+                        // Forward to signal-api
+                        let forward_body = serde_json::json!({
+                            "asset": &data.asset,
+                            "readings": &data.readings
+                        });
+                        match client.post(&ingest_url).json(&forward_body).send().await {
+                            Ok(_) => {
+                                info!(event = "poll_success", tags_ingested = total, asset = %data.asset, forwarded = true);
+                            }
+                            Err(e) => {
+                                info!(event = "poll_success", tags_ingested = total, asset = %data.asset, forwarded = false, forward_error = %e);
+                            }
+                        }
                     }
                     Err(e) => {
                         error!(event = "deserialize_failed", error = %e);
