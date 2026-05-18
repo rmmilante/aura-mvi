@@ -1,3 +1,7 @@
+import os
+import streamlit as st
+import requests
+import time
 import streamlit as st
 import requests
 import time
@@ -18,7 +22,11 @@ col1, col2, col3 = st.columns(3)
 
 try:
     # Signal API status
-    signal_resp = requests.get("http://localhost:8003/status", timeout=2)
+SIGNAL_API_URL = os.environ.get("SIGNAL_API_URL", "http://localhost:8003")
+EDGE_AGENT_URL = os.environ.get("EDGE_AGENT_URL", "http://localhost:8002")
+
+# Signal API status
+signal_resp = requests.get(f"{SIGNAL_API_URL}/status", timeout=2)
     signal_data = signal_resp.json()
     
     anomalies = signal_data.get("anomalies_detected", 0)
@@ -40,7 +48,7 @@ try:
     col3.metric("Pressure", f"{press:.2f} bar", None)
     
     # Edge agent health
-    edge_resp = requests.get("http://localhost:8002/health", timeout=2)
+edge_resp = requests.get(f"{EDGE_AGENT_URL}/health", timeout=2)
     edge_data = edge_resp.json()
     
     st.sidebar.metric("Tags Ingested", edge_data.get("tags_ingested", 0))
